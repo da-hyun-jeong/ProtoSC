@@ -1,5 +1,11 @@
-
 frob_norm = function(A) sqrt(sum(A * A))
+
+grouped_sum = function(M, g, n) {
+  out = matrix(0, n, ncol(M))
+  s = rowsum(M, g, reorder = TRUE)
+  out[as.integer(rownames(s)), ] = s
+  out
+}
 
 init_state = function(X) {
   n = nrow(X)
@@ -99,19 +105,15 @@ update_Z3 = function(st) {
 }
 
 update_Z4 = function(st) {
-  L = nrow(st$edges)
+  ij = st$edges
   Z4_new = st$Z + st$E3 - st$Psi3
   
-  for (l in seq_len(L)) {
-    i = st$edges[l, 1]
-    j = st$edges[l, 2]
-    d = st$U2[i, ] - st$U3[j, ]
-    
-    Z4_new[i, j] = (
-      sum((st$A[l, ] + st$E9[l, ] - st$Psi9[l, ]) * d) +
-        st$Z[i, j] + st$E3[i, j] - st$Psi3[i, j]
-    ) / (sum(d * d) + 1)
-  }
+  d = st$U2[ij[, 1], , drop = FALSE] - st$U3[ij[, 2], , drop = FALSE]
+  
+  Z4_new[ij] = (
+    rowSums((st$A + st$E9 - st$Psi9) * d) +
+      st$Z[ij] + st$E3[ij] - st$Psi3[ij]
+  ) / (rowSums(d * d) + 1)
   
   st$Z4 = Z4_new
   st
@@ -130,82 +132,49 @@ update_U1 = function(st) {
 
 update_U2 = function(st) {
   n = nrow(st$U2)
-  U2_new = matrix(0, n, ncol(st$U2))
+  ij = st$edges
+  z = st$Z4[ij]
   
-  for (i in seq_len(n)) {
-    idx = which(st$edges[, 1] == i)
-    num = st$U[i, ] + st$E6[i, ] - st$Psi6[i, ]
-    den = 1
-    
-    if (length(idx) > 0) {
-      for (l in idx) {
-        j = st$edges[l, 2]
-        z = st$Z4[st$edges[l, 1], st$edges[l, 2]]
-        
-        num = num +
-          z^2 * st$U3[j, ] +
-          z * st$A[l, ] +
-          z * st$E9[l, ] -
-          z * st$Psi9[l, ]
-        
-        den = den + z^2
-      }
-    }
-    
-    U2_new[i, ] = num / den
-  }
+  contrib =
+    z^2 * st$U3[ij[, 2], , drop = FALSE] +
+    z * st$A +
+    z * st$E9 -
+    z * st$Psi9
   
-  st$U2 = U2_new
+  num = st$U + st$E6 - st$Psi6 + grouped_sum(contrib, ij[, 1], n)
+  den = 1 + grouped_sum(matrix(z^2), ij[, 1], n)[, 1]
+  
+  st$U2 = num / den
   st
 }
 
 update_U3 = function(st) {
   n = nrow(st$U3)
-  U3_new = matrix(0, n, ncol(st$U3))
+  ij = st$edges
+  z = st$Z4[ij]
   
-  for (j in seq_len(n)) {
-    idx = which(st$edges[, 2] == j)
-    num = st$U[j, ] + st$E7[j, ] - st$Psi7[j, ]
-    den = 1
-    
-    if (length(idx) > 0) {
-      for (l in idx) {
-        i = st$edges[l, 1]
-        z = st$Z4[st$edges[l, 1], st$edges[l, 2]]
-        
-        num = num +
-          z^2 * st$U2[i, ] -
-          z * st$A[l, ] -
-          z * st$E9[l, ] +
-          z * st$Psi9[l, ]
-        
-        den = den + z^2
-      }
-    }
-    
-    U3_new[j, ] = num / den
-  }
+  contrib =
+    z^2 * st$U2[ij[, 1], , drop = FALSE] -
+    z * st$A -
+    z * st$E9 +
+    z * st$Psi9
   
-  st$U3 = U3_new
+  num = st$U + st$E7 - st$Psi7 + grouped_sum(contrib, ij[, 2], n)
+  den = 1 + grouped_sum(matrix(z^2), ij[, 2], n)[, 1]
+  
+  st$U3 = num / den
   st
 }
 
 update_A = function(st) {
-  L = nrow(st$edges)
-  A_new = matrix(0, L, ncol(st$A))
+  ij = st$edges
   
-  for (l in seq_len(L)) {
-    i = st$edges[l, 1]
-    j = st$edges[l, 2]
-    v = st$Z4[i, j] * (st$U2[i, ] - st$U3[j, ]) - st$E9[l, ] + st$Psi9[l, ]
-    nv = sqrt(sum(v * v))
-    
-    if (nv > st$lambda / st$rho) {
-      A_new[l, ] = ((st$rho * nv - st$lambda) / ((2 * st$lambda + st$rho) * nv)) * v
-    }
-  }
+  v = st$Z4[ij] * (st$U2[ij[, 1], , drop = FALSE] - st$U3[ij[, 2], , drop = FALSE]) - st$E9 + st$Psi9
+  nv = sqrt(rowSums(v * v))
   
-  st$A = A_new
+  coef = ifelse(nv > st$lambda / st$rho, (st$rho * nv - st$lambda) / ((2 * st$lambda + st$rho) * nv), 0)
+  
+  st$A = coef * v
   st
 }
 
@@ -250,31 +219,19 @@ update_E8 = function(st) {
 }
 
 update_E9 = function(st) {
-  L = nrow(st$edges)
-  E9_new = matrix(0, L, ncol(st$E9))
+  ij = st$edges
   
-  for (l in seq_len(L)) {
-    i = st$edges[l, 1]
-    j = st$edges[l, 2]
-    
-    E9_new[l, ] = st$rho / (st$mu + st$rho) * (
-      st$Z4[i, j] * (st$U2[i, ] - st$U3[j, ]) - st$A[l, ] + st$Psi9[l, ]
-    )
-  }
+  st$E9 = st$rho / (st$mu + st$rho) * (
+    st$Z4[ij] * (st$U2[ij[, 1], , drop = FALSE] - st$U3[ij[, 2], , drop = FALSE]) - st$A + st$Psi9
+  )
   
-  st$E9 = E9_new
   st
 }
 
 update_duals = function(st) {
-  L = nrow(st$edges)
-  Psi9_new = st$Psi9
+  ij = st$edges
   
-  for (l in seq_len(L)) {
-    i = st$edges[l, 1]
-    j = st$edges[l, 2]
-    Psi9_new[l, ] = Psi9_new[l, ] + st$Z4[i, j] * (st$U2[i, ] - st$U3[j, ]) - st$A[l, ] - st$E9[l, ]
-  }
+  Psi9_new = st$Psi9 + st$Z4[ij] * (st$U2[ij[, 1], , drop = FALSE] - st$U3[ij[, 2], , drop = FALSE]) - st$A - st$E9
   
   st$Psi1 = st$Psi1 + st$Z1 - st$Z2 - st$E1
   st$Psi2 = st$Psi2 + st$Z3 - st$Z - st$E2
@@ -292,6 +249,7 @@ stopping_criteria = function(st, st_prev) {
   n = nrow(st$Z)
   p = ncol(st$U)
   L = nrow(st$edges)
+  ij = st$edges
   
   R1 = st$Z1 - st$Z2 - st$E1
   R2 = st$Z3 - st$Z - st$E2
@@ -302,16 +260,8 @@ stopping_criteria = function(st, st_prev) {
   R7 = st$U3 - st$U - st$E7
   R8 = st$Z3 %*% st$U1 - st$U - st$E8
   
-  D9 = matrix(0, L, p)
-  R9 = matrix(0, L, p)
-  
-  for (l in seq_len(L)) {
-    i = st$edges[l, 1]
-    j = st$edges[l, 2]
-    
-    D9[l, ] = st$Z4[i, j] * (st$U2[i, ] - st$U3[j, ])
-    R9[l, ] = D9[l, ] - st$A[l, ] - st$E9[l, ]
-  }
+  D9 = st$Z4[ij] * (st$U2[ij[, 1], , drop = FALSE] - st$U3[ij[, 2], , drop = FALSE])
+  R9 = D9 - st$A - st$E9
   
   r = sqrt(
     sum(R1 * R1) + sum(R2 * R2) + sum(R3 * R3) +
